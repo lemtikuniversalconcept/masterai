@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: lemtik-masterai
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PORT
+        value: 8000
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: RELATIONSHIP_API_URL
+        sync: false
+      - key: RELATIONSHIP_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false

@@ -35,13 +35,17 @@ class Settings:
 
 def load_settings(base_dir: Path | None = None) -> Settings:
     root = base_dir or Path(__file__).resolve().parent
+    environment = os.getenv("ENVIRONMENT", "production").strip()
+    internal_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
+    if environment == "production" and not internal_api_key:
+        raise RuntimeError("INTERNAL_API_KEY is required in production.")
     return Settings(
         database_url=os.getenv("DATABASE_URL", "").strip() or None,
         local_database_path=Path(os.getenv("LOCAL_DATABASE_PATH", root / "masterai.db")),
-        internal_api_key=os.getenv("INTERNAL_API_KEY", "dev-internal-key").strip(),
+        internal_api_key=internal_api_key or "dev-internal-key",
         relationship_api_url=os.getenv("RELATIONSHIP_API_URL", "").strip() or None,
         relationship_api_key=os.getenv("RELATIONSHIP_API_KEY", "").strip() or None,
-        environment=os.getenv("ENVIRONMENT", "production").strip(),
+        environment=environment,
         host=os.getenv("HOST", "0.0.0.0").strip(),
         port=int(os.getenv("PORT", "8000")),
         ai_provider=os.getenv("AI_PROVIDER", "auto").strip().lower(),

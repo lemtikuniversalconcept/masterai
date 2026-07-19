@@ -254,6 +254,49 @@ class MasterAITestCase(unittest.TestCase):
         self.assertIn("proximity_finder", [job["service"] for job in result["jobs_needed"]])
         self.assertEqual(result["available_services"], payload["available_services"])
 
+    def test_analyze_incident_uses_heuristic_fallback_without_ai_keys(self) -> None:
+        payload = {
+            "request_id": "req_ai_001",
+            "incident": {
+                "description": "Suspicious person at the lobby entrance.",
+                "location": "Lobby",
+            },
+            "context": {
+                "org_type": "hotel",
+                "location_name": "Eko Hotel",
+            },
+        }
+        result = self.app_module.service.analyze_incident(payload)
+        self.assertEqual(result["step"], "analysis")
+        self.assertEqual(result["model_provider"], "heuristic-fallback")
+        self.assertIn("analysis", result)
+
+    def test_ai_analyze_incident_route(self) -> None:
+        if getattr(self.app_module, "FastAPI", None) is None:
+            self.skipTest("FastAPI is not available in this environment")
+        from fastapi.testclient import TestClient
+
+        client = TestClient(self.app_module.app)
+        response = client.post(
+            "/ai/analyze-incident",
+            headers={"X-Internal-Key": "dev-internal-key"},
+            json={
+                "request_id": "req_ai_002",
+                "incident": {
+                    "description": "Radio report of a fire alarm at the loading bay.",
+                    "location": "Loading Bay",
+                },
+                "context": {
+                    "org_type": "warehouse",
+                    "location_name": "Warehouse 12",
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["step"], "analysis")
+        self.assertIn("model_provider", body)
+
 
 if __name__ == "__main__":
     unittest.main()

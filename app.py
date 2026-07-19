@@ -75,7 +75,7 @@ class MasterAIASGIApp:
             if method == "GET" and normalized_path.startswith("/health/"):
                 return _json_response(200, self.service.health())
             if method == "GET" and normalized_path == "/":
-                return _json_response(200, {"status": "ok", "service": "masterai", "endpoints": ["/health", "/triage", "/synthesise", "/process", "/session/{id}"]})
+                return _json_response(200, {"status": "ok", "service": "masterai", "endpoints": ["/health", "/triage", "/synthesise", "/process", "/session/{id}", "/ai/analyze-incident", "/ai/analyze-image", "/ai/process-radio", "/ai/parse-report", "/ai/recommend-response", "/ai/correlate-events", "/ai/generate-summary", "/ai/query", "/ai/device-recommendations"]})
 
             if method == "POST" and normalized_path in {"/triage", "/synthesise", "/process"}:
                 _check_internal_key(headers.get("x-internal-key"))
@@ -123,6 +123,32 @@ class MasterAIASGIApp:
                 )
                 result["session_id"] = session_id
                 return _json_response(200, result)
+
+            if method == "POST" and normalized_path in {
+                "/ai/analyze-incident",
+                "/ai/analyze-image",
+                "/ai/process-radio",
+                "/ai/parse-report",
+                "/ai/recommend-response",
+                "/ai/correlate-events",
+                "/ai/generate-summary",
+                "/ai/query",
+                "/ai/device-recommendations",
+            }:
+                _check_internal_key(headers.get("x-internal-key"))
+                payload = json.loads(body.decode("utf-8") or "{}")
+                handlers = {
+                    "/ai/analyze-incident": self.service.analyze_incident,
+                    "/ai/analyze-image": self.service.analyze_image,
+                    "/ai/process-radio": self.service.process_radio,
+                    "/ai/parse-report": self.service.parse_report,
+                    "/ai/recommend-response": self.service.recommend_response,
+                    "/ai/correlate-events": self.service.correlate_events,
+                    "/ai/generate-summary": self.service.generate_summary,
+                    "/ai/query": self.service.query,
+                    "/ai/device-recommendations": self.service.device_recommendations,
+                }
+                return _json_response(200, handlers[normalized_path](payload))
 
             if method == "GET" and normalized_path.startswith("/session/"):
                 _check_internal_key(headers.get("x-internal-key"))
@@ -196,7 +222,7 @@ if FastAPI is not None:
 
     @app.get("/")
     async def root() -> JSONResponse:  # type: ignore[valid-type]
-        return JSONResponse({"status": "ok", "service": "masterai", "endpoints": ["/health", "/triage", "/synthesise", "/process", "/session/{id}"]})
+        return JSONResponse({"status": "ok", "service": "masterai", "endpoints": ["/health", "/triage", "/synthesise", "/process", "/session/{id}", "/ai/analyze-incident", "/ai/analyze-image", "/ai/process-radio", "/ai/parse-report", "/ai/recommend-response", "/ai/correlate-events", "/ai/generate-summary", "/ai/query", "/ai/device-recommendations"]})
 
     @app.post("/triage")
     @app.post("/api/v1/triage")
@@ -255,6 +281,81 @@ if FastAPI is not None:
         )
         result["session_id"] = session_id
         return JSONResponse(result)
+
+    @app.get("/ai")
+    @app.get("/api/v1/ai")
+    async def ai_root() -> JSONResponse:  # type: ignore[valid-type]
+        return JSONResponse(
+            {
+                "status": "success",
+                "service": "masterai",
+                "endpoints": [
+                    "/ai/analyze-incident",
+                    "/ai/analyze-image",
+                    "/ai/process-radio",
+                    "/ai/parse-report",
+                    "/ai/recommend-response",
+                    "/ai/correlate-events",
+                    "/ai/generate-summary",
+                    "/ai/query",
+                    "/ai/device-recommendations",
+                ],
+            }
+        )
+
+    @app.post("/ai/analyze-incident")
+    @app.post("/api/v1/ai/analyze-incident")
+    async def ai_analyze_incident(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.analyze_incident(payload))
+
+    @app.post("/ai/analyze-image")
+    @app.post("/api/v1/ai/analyze-image")
+    async def ai_analyze_image(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.analyze_image(payload))
+
+    @app.post("/ai/process-radio")
+    @app.post("/api/v1/ai/process-radio")
+    async def ai_process_radio(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.process_radio(payload))
+
+    @app.post("/ai/parse-report")
+    @app.post("/api/v1/ai/parse-report")
+    async def ai_parse_report(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.parse_report(payload))
+
+    @app.post("/ai/recommend-response")
+    @app.post("/api/v1/ai/recommend-response")
+    async def ai_recommend_response(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.recommend_response(payload))
+
+    @app.post("/ai/correlate-events")
+    @app.post("/api/v1/ai/correlate-events")
+    async def ai_correlate_events(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.correlate_events(payload))
+
+    @app.post("/ai/generate-summary")
+    @app.post("/api/v1/ai/generate-summary")
+    async def ai_generate_summary(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.generate_summary(payload))
+
+    @app.post("/ai/query")
+    @app.post("/api/v1/ai/query")
+    async def ai_query(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.query(payload))
+
+    @app.post("/ai/device-recommendations")
+    @app.post("/api/v1/ai/device-recommendations")
+    async def ai_device_recommendations(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.device_recommendations(payload))
 
     @app.get("/session/{request_id}")
     @app.get("/api/v1/session/{request_id}")

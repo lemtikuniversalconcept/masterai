@@ -6,6 +6,7 @@ This document explains how the Lemtik Security Relationship API, or any other in
 
 Master AI is the orchestration brain for incident handling.
 It does not replace the other services. It decides what data is needed, reasons over the collected data, and returns a structured recommendation panel.
+It can use either Groq or Qwen models, with Qwen preferred for multimodal tasks such as image analysis when `QWEN_API_KEY` is configured.
 
 Typical flow:
 
@@ -18,6 +19,8 @@ Typical flow:
 7. The caller presents the panel to an operator or pushes selected actions onward.
 
 The combined one-shot alternative is `POST /process`.
+
+When Relationship API is the caller, it should forward the same payload shape to Master AI and pass through the internal API key header. Master AI does not need Relationship API-specific wrappers, only the request body and auth header.
 
 ---
 
@@ -64,10 +67,19 @@ The service supports both the short paths and the `/api/v1` aliases used by the 
 - `GET /session/{id}` and `GET /api/v1/session/{id}`
 - `GET /agent/jobs/{request_id}` and `GET /api/v1/agent/jobs/{request_id}`
 - `POST /agent/approve/{request_id}` and `POST /api/v1/agent/approve/{request_id}`
+- `POST /ai/analyze-incident` and `POST /api/v1/ai/analyze-incident`
+- `POST /ai/analyze-image` and `POST /api/v1/ai/analyze-image`
+- `POST /ai/process-radio` and `POST /api/v1/ai/process-radio`
+- `POST /ai/parse-report` and `POST /api/v1/ai/parse-report`
+- `POST /ai/recommend-response` and `POST /api/v1/ai/recommend-response`
+- `POST /ai/correlate-events` and `POST /api/v1/ai/correlate-events`
+- `POST /ai/generate-summary` and `POST /api/v1/ai/generate-summary`
+- `POST /ai/query` and `POST /api/v1/ai/query`
+- `POST /ai/device-recommendations` and `POST /api/v1/ai/device-recommendations`
 
 ### `GET /health`
 
-Returns service health, database status, and Groq/Relationship API connectivity checks.
+Returns service health, database status, and Groq/Qwen/Relationship API connectivity checks.
 
 Use this to verify the service is alive before wiring it into a Relationship API or dashboard.
 
@@ -88,6 +100,12 @@ Example response:
     "configured": false,
     "reachable": false,
     "model": "llama-3.3-70b-versatile"
+  },
+  "qwen": {
+    "configured": false,
+    "reachable": false,
+    "text_model": "qwen-plus",
+    "vision_model": "qwen-vl-plus"
   },
   "relationship_api": {
     "configured": false,
@@ -192,6 +210,8 @@ After `/triage`, the caller should:
 3. Collect their results
 4. Send the combined package to `POST /synthesise`
 
+If the caller is Relationship API, it can also expose these same steps behind a single orchestration endpoint and let Master AI do the triage and synthesis on behalf of the caller.
+
 ---
 
 ### `POST /synthesise`
@@ -207,6 +227,8 @@ It combines:
 - autonomous scan results
 
 and returns a commander-ready panel.
+
+This endpoint is the main integration point for the Relationship API and any other upstream application that has already gathered downstream service results.
 
 #### Request
 
@@ -250,6 +272,57 @@ X-Internal-Key: <INTERNAL_API_KEY>
   }
 }
 ```
+
+---
+
+## Qwen AI Endpoints
+
+The `/ai/*` routes are convenience entry points for AI-only workflows. They are useful when a caller wants a direct analysis or recommendation without going through the full triage/synthesis cycle.
+
+Common use cases:
+
+- `analyze-incident`: turn incident text into a threat analysis
+- `analyze-image`: inspect an image with Qwen vision
+- `process-radio`: parse a radio transcript
+- `parse-report`: extract structure from a written report
+- `recommend-response`: suggest a response plan
+- `correlate-events`: compare multiple events
+- `generate-summary`: summarize a set of events
+- `query`: answer an internal question
+- `device-recommendations`: recommend equipment or devices for an incident
+
+All of these endpoints:
+
+- require `X-Internal-Key`
+- accept JSON request bodies
+- return JSON responses
+- fall back to deterministic heuristics when no AI provider is configured
+
+Example request:
+
+```http
+POST /api/v1/ai/analyze-incident
+Content-Type: application/json
+X-Internal-Key: <INTERNAL_API_KEY>
+```
+
+```json
+{
+  "request_id": "req_ai_001",
+  "incident": {
+    "description": "Suspicious person at the lobby entrance.",
+    "location": "Lobby"
+  },
+  "context": {
+    "org_type": "hotel",
+    "location_name": "Eko Hotel"
+  }
+}
+```
+
+The response includes the AI or fallback `model`, `model_provider`, the `step`, and the structured analysis payload.
+
+If Qwen is configured, image analysis uses the vision model configured by `QWEN_VISION_MODEL`. Text endpoints use `QWEN_TEXT_MODEL`.
 
 #### Response
 

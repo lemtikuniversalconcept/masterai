@@ -184,11 +184,132 @@ class GroqGateway:
             return {"configured": True, "reachable": False, "error": str(exc), "model": self.settings.groq_model}
 
 
+class QwenGateway:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.api_key = settings.qwen_api_key
+        self.base_url = settings.qwen_base_url.rstrip("/")
+        self.text_model = settings.qwen_text_model
+        self.vision_model = settings.qwen_vision_model
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key)
+
+    def chat_json(self, system_prompt: str, user_message: str, max_tokens: int, model: str | None = None) -> dict[str, Any] | None:
+        if not self.api_key:
+            return None
+        payload = {
+            "model": model or self.text_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": self.settings.qwen_temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            req = urllib_request.Request(
+                f"{self.base_url}/chat/completions",
+                data=json.dumps(payload, ensure_ascii=True, default=str).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=self.settings.agent_timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            choices = data.get("choices") or []
+            if not choices:
+                return None
+            message = choices[0].get("message") if isinstance(choices[0], dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                return None
+            parsed = json.loads(content)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    def multimodal_json(
+        self,
+        system_prompt: str,
+        user_text: str,
+        image_urls: list[str],
+        max_tokens: int,
+        model: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.api_key:
+            return None
+        content = [{"type": "text", "text": user_text}]
+        for url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        payload = {
+            "model": model or self.vision_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ],
+            "temperature": self.settings.qwen_temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            req = urllib_request.Request(
+                f"{self.base_url}/chat/completions",
+                data=json.dumps(payload, ensure_ascii=True, default=str).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=self.settings.agent_timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            choices = data.get("choices") or []
+            if not choices:
+                return None
+            message = choices[0].get("message") if isinstance(choices[0], dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                return None
+            parsed = json.loads(content)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    def health_probe(self) -> dict[str, Any]:
+        if not self.api_key:
+            return {"configured": False, "reachable": False, "text_model": self.text_model, "vision_model": self.vision_model}
+        try:
+            req = urllib_request.Request(
+                f"{self.base_url}/models",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                method="GET",
+            )
+            with urllib_request.urlopen(req, timeout=min(8, self.settings.agent_timeout_seconds)) as response:
+                status_code = getattr(response, "status", 200)
+            return {
+                "configured": True,
+                "reachable": status_code < 500,
+                "status_code": status_code,
+                "text_model": self.text_model,
+                "vision_model": self.vision_model,
+            }
+        except urllib_error.URLError as exc:
+            return {"configured": True, "reachable": False, "error": str(exc), "text_model": self.text_model, "vision_model": self.vision_model}
+        except Exception as exc:
+            return {"configured": True, "reachable": False, "error": str(exc), "text_model": self.text_model, "vision_model": self.vision_model}
+
+
 class MasterAIService:
     def __init__(self, settings: Settings, store: MasterAIStore) -> None:
         self.settings = settings
         self.store = store
         self.groq = GroqGateway(settings)
+        self.qwen = QwenGateway(settings)
         self.relationship = RelationshipAPIClient(
             RelationshipAPISettings(
                 base_url=settings.relationship_api_url,
@@ -197,12 +318,54 @@ class MasterAIService:
             )
         )
 
+    def _provider_order(self, multimodal: bool = False) -> list[tuple[str, Any]]:
+        if self.settings.ai_provider == "groq":
+            order: list[tuple[str, Any]] = [("groq", self.groq), ("qwen", self.qwen)]
+        elif self.settings.ai_provider == "qwen":
+            order = [("qwen", self.qwen), ("groq", self.groq)]
+        else:
+            order = [("qwen", self.qwen), ("groq", self.groq)] if self.qwen.configured else [("groq", self.groq), ("qwen", self.qwen)]
+        if multimodal:
+            order = [item for item in order if item[0] == "qwen"] or order
+        return order
+
+    def _chat_json(
+        self,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: int,
+        multimodal: bool = False,
+        image_urls: list[str] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        for provider_name, gateway in self._provider_order(multimodal=multimodal):
+            if provider_name == "qwen":
+                if multimodal and image_urls:
+                    result = gateway.multimodal_json(system_prompt, user_message, image_urls, max_tokens)
+                else:
+                    result = gateway.chat_json(system_prompt, user_message, max_tokens)
+            else:
+                if multimodal:
+                    continue
+                result = gateway.chat_json(system_prompt, user_message, max_tokens)
+            if result:
+                return result, provider_name
+        return None, "heuristic-fallback"
+
+    def _selected_model_name(self, provider: str, multimodal: bool = False) -> str:
+        if provider == "qwen":
+            return self.qwen.vision_model if multimodal else self.qwen.text_model
+        if provider == "groq":
+            return self.settings.groq_model
+        return "heuristic-fallback"
+
     def health(self) -> dict[str, Any]:
         return {
             "status": "success",
             "service": "masterai",
             "environment": self.settings.environment,
+            "ai_provider": self.settings.ai_provider,
             "groq": self.groq.health_probe(),
+            "qwen": self.qwen.health_probe(),
             "relationship_api": self.relationship.health(),
             "database": self.store.health(),
         }
@@ -266,15 +429,16 @@ class MasterAIService:
             "route_calculation_note": "Indoor incident - route to be calculated after officers identified by proximity finder" if route_calculation_deferred else None,
             "verification_reason": None if confidence >= self.settings.confidence_full_response else "incident description or location needs confirmation",
             "requires_human_verification": confidence < self.settings.confidence_full_response,
-            "model": self.settings.groq_model if self.groq.configured else "heuristic-fallback",
+            "model": self._selected_model_name(self._provider_order()[0][0]),
         }
-        groq_triage = self.groq.chat_json(self._triage_prompt(), self._triage_user_message(payload), self.settings.groq_max_tokens_triage)
-        if groq_triage:
-            response["triage"] = self._merge_triage(response["triage"], groq_triage)
+        ai_triage, provider = self._chat_json(self._triage_prompt(), self._triage_user_message(payload), self.settings.groq_max_tokens_triage)
+        if ai_triage:
+            response["triage"] = self._merge_triage(response["triage"], ai_triage)
             response["confidence"] = int(response["triage"].get("confidence", confidence))
             response["requires_human_verification"] = response["confidence"] < self.settings.confidence_full_response
             if response["requires_human_verification"]:
                 response["triage"].update(_build_low_confidence_block(description, response["confidence"]))
+            response["model_provider"] = provider
         return response
 
     def synthesise(self, request: SynthesiseRequest | dict[str, Any]) -> dict[str, Any]:
@@ -290,9 +454,9 @@ class MasterAIService:
         route_calculator = service_results.get("route_calculator") or {}
 
         panel = self._heuristic_panel(payload, triage, service_results, osint, proximity, inventory, autonomous_scan, route_calculator)
-        groq_panel = self.groq.chat_json(self._synthesis_prompt(), self._synthesis_user_message(payload), self.settings.groq_max_tokens_synthesis)
-        if groq_panel:
-            panel = self._merge_panel(panel, groq_panel)
+        ai_panel, provider = self._chat_json(self._synthesis_prompt(), self._synthesis_user_message(payload), self.settings.groq_max_tokens_synthesis)
+        if ai_panel:
+            panel = self._merge_panel(panel, ai_panel)
 
         latency_ms = int((time.perf_counter() - start) * 1000)
         response = {
@@ -301,7 +465,8 @@ class MasterAIService:
             "step": "synthesis",
             "panel": panel,
             "tokens_used": self._estimate_tokens(panel),
-            "model": self.settings.groq_model if self.groq.configured else "heuristic-fallback",
+            "model": self._selected_model_name(provider),
+            "model_provider": provider,
             "latency_ms": latency_ms,
         }
         return response
@@ -402,6 +567,329 @@ class MasterAIService:
             "triage_output": record.get("triage_output") or {},
             "synthesis_output": record.get("synthesis_output") or {},
         }
+
+    def analyze_incident(self, payload: dict[str, Any]) -> dict[str, Any]:
+        incident = payload.get("incident") or payload.get("incident_raw") or payload.get("raw_input") or {}
+        context = payload.get("context") or payload.get("org_context") or {}
+        prompt = self._incident_analysis_prompt()
+        user_message = json.dumps({"incident": incident, "context": context, "constraints": payload.get("constraints") or {}}, ensure_ascii=True, default=str)
+        ai_result, provider = self._chat_json(prompt, user_message, self.settings.groq_max_tokens_triage)
+        if ai_result:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "success",
+                "step": "analysis",
+                "analysis": ai_result,
+                "model": self._selected_model_name(provider),
+                "model_provider": provider,
+            }
+
+        triage = self.triage(
+            {
+                "request_type": "agent_triage",
+                "request_id": payload.get("request_id"),
+                "org_id": payload.get("org_id", ""),
+                "incident_raw": incident if "description" in incident else {"description": incident.get("content") or ""},
+                "org_context": context,
+            }
+        )
+        analysis = {
+            "threat_level": "high" if triage["triage"].get("severity", 1) >= 4 else "medium" if triage["triage"].get("severity", 1) == 3 else "low",
+            "confidence": triage["triage"].get("confidence", 0),
+            "explanation": "Derived from structured incident triage.",
+            "recommended_actions": triage.get("jobs_needed", []),
+            "structured_incident": triage["triage"],
+            "gaps": triage["triage"].get("operator_followup_questions", []),
+        }
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "analysis",
+            "analysis": analysis,
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
+    def analyze_image(self, payload: dict[str, Any]) -> dict[str, Any]:
+        image_urls = payload.get("image_urls") or []
+        if isinstance(payload.get("image_url"), str):
+            image_urls = [payload["image_url"]]
+        if isinstance(payload.get("image"), dict) and payload["image"].get("url"):
+            image_urls = [payload["image"]["url"]]
+        prompt = self._image_analysis_prompt()
+        user_text = json.dumps(
+            {
+                "incident": payload.get("incident") or {},
+                "context": payload.get("context") or {},
+                "instructions": "Inspect the image and return only valid JSON.",
+            },
+            ensure_ascii=True,
+            default=str,
+        )
+        if image_urls:
+            ai_result, provider = self._chat_json(prompt, user_text, self.settings.groq_max_tokens_triage, multimodal=True, image_urls=list(image_urls))
+            if ai_result:
+                return {
+                    "request_id": payload.get("request_id"),
+                    "status": "success",
+                    "step": "image_analysis",
+                    "analysis": ai_result,
+                    "model": self._selected_model_name(provider, multimodal=True),
+                    "model_provider": provider,
+                }
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "image_analysis",
+            "analysis": {
+                "confidence": 35,
+                "threat_level": "unknown",
+                "explanation": "Image analysis requires Qwen vision model or a valid image URL.",
+                "recommended_actions": ["Verify image source", "Request manual review"],
+                "structured_incident": None,
+            },
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
+    def process_radio(self, payload: dict[str, Any]) -> dict[str, Any]:
+        transcript = payload.get("transcript") or payload.get("text") or payload.get("message") or ""
+        if not transcript:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "error",
+                "step": "radio",
+                "error": {"reason": "transcript is required"},
+            }
+        ai_result, provider = self._chat_json(self._radio_prompt(), transcript, self.settings.groq_max_tokens_triage)
+        if ai_result:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "success",
+                "step": "radio",
+                "radio": ai_result,
+                "model": self._selected_model_name(provider),
+                "model_provider": provider,
+            }
+        triage = self.triage(
+            {
+                "request_type": "agent_triage",
+                "request_id": payload.get("request_id"),
+                "org_id": payload.get("org_id", ""),
+                "incident_raw": {
+                    "description": transcript,
+                    "reported_by": payload.get("source") or "radio",
+                    "location_stated": payload.get("location") or "",
+                    "building": payload.get("building"),
+                    "floor": payload.get("floor"),
+                    "zone": payload.get("zone"),
+                    "timestamp": payload.get("timestamp") or _iso_now(),
+                    "source": "radio",
+                },
+                "org_context": payload.get("context") or {},
+            }
+        )
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "radio",
+            "radio": {
+                "structured_incident": triage["triage"],
+                "confidence": triage["triage"].get("confidence", 0),
+                "backup_request": "unconfirmed" if triage["triage"].get("severity", 1) >= 3 else "none",
+                "patrol": payload.get("patrol"),
+                "location": payload.get("location"),
+                "call_signs": payload.get("call_signs") or [],
+            },
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
+    def parse_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        report = payload.get("report") or payload.get("text") or payload.get("message") or ""
+        ai_result, provider = self._chat_json(self._report_prompt(), report, self.settings.groq_max_tokens_triage)
+        if ai_result:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "success",
+                "step": "report",
+                "report": ai_result,
+                "model": self._selected_model_name(provider),
+                "model_provider": provider,
+            }
+        triage = self.triage(
+            {
+                "request_type": "agent_triage",
+                "request_id": payload.get("request_id"),
+                "org_id": payload.get("org_id", ""),
+                "incident_raw": {
+                    "description": report,
+                    "reported_by": payload.get("reported_by") or "report",
+                    "location_stated": payload.get("location") or "",
+                    "building": payload.get("building"),
+                    "timestamp": payload.get("timestamp") or _iso_now(),
+                    "source": "operator_log",
+                },
+                "org_context": payload.get("context") or {},
+            }
+        )
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "report",
+            "report": {
+                "structured_incident": triage["triage"],
+                "confidence": triage["triage"].get("confidence", 0),
+                "notes": report,
+            },
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
+    def recommend_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("incident") and payload.get("service_results"):
+            return self.synthesise(payload)
+        incident = payload.get("incident") or payload.get("incident_raw") or {}
+        analysis = self.analyze_incident({"request_id": payload.get("request_id"), "org_id": payload.get("org_id", ""), "incident": incident, "context": payload.get("context") or payload.get("org_context") or {}})
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "recommend_response",
+            "recommendation": {
+                "confidence": analysis.get("analysis", {}).get("confidence", 0),
+                "priority": "high" if analysis.get("analysis", {}).get("confidence", 0) >= 70 else "medium",
+                "suggested_patrol": payload.get("suggested_patrol") or [],
+                "suggested_route": payload.get("suggested_route") or None,
+                "escalation_level": analysis.get("analysis", {}).get("threat_level", "unknown"),
+                "required_equipment": payload.get("required_equipment") or [],
+                "reasoning": analysis.get("analysis", {}).get("explanation"),
+            },
+            "model": analysis.get("model"),
+            "model_provider": analysis.get("model_provider"),
+        }
+
+    def correlate_events(self, payload: dict[str, Any]) -> dict[str, Any]:
+        events = payload.get("events") or []
+        if not isinstance(events, list):
+            events = []
+        similarity_score = self._event_similarity(events)
+        ai_result, provider = self._chat_json(self._correlation_prompt(), json.dumps({"events": events}, ensure_ascii=True, default=str), self.settings.groq_max_tokens_triage)
+        if ai_result:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "success",
+                "step": "correlate_events",
+                "correlation": ai_result,
+                "model": self._selected_model_name(provider),
+                "model_provider": provider,
+            }
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "correlate_events",
+            "correlation": {
+                "similarity_score": similarity_score,
+                "risk_trend": "elevating" if similarity_score >= 70 else "stable",
+                "recommended_escalation": "review" if similarity_score < 70 else "escalate",
+                "matched_on": [event.get("location") for event in events if isinstance(event, dict) and event.get("location")],
+            },
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
+    def generate_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+        events = payload.get("events") or payload.get("incidents") or []
+        ai_result, provider = self._chat_json(self._summary_prompt(), json.dumps({"events": events}, ensure_ascii=True, default=str), self.settings.groq_max_tokens_triage)
+        if ai_result:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "success",
+                "step": "summary",
+                "summary": ai_result,
+                "model": self._selected_model_name(provider),
+                "model_provider": provider,
+            }
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "summary",
+            "summary": {
+                "headline": f"{len(events)} items reviewed",
+                "body": "Summary generated from available structured data.",
+                "items_reviewed": len(events),
+            },
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
+    def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+        question = payload.get("query") or payload.get("question") or ""
+        ai_result, provider = self._chat_json(self._query_prompt(), question, self.settings.groq_max_tokens_triage)
+        if ai_result:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "success",
+                "step": "query",
+                "query": ai_result,
+                "model": self._selected_model_name(provider),
+                "model_provider": provider,
+            }
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "query",
+            "query": {
+                "natural_language": question,
+                "intent": "structured_query",
+                "filters": payload.get("filters") or {},
+            },
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
+    def device_recommendations(self, payload: dict[str, Any]) -> dict[str, Any]:
+        incident = payload.get("incident") or payload.get("context") or {}
+        ai_result, provider = self._chat_json(self._device_prompt(), json.dumps({"incident": incident, "available_devices": payload.get("available_devices") or []}, ensure_ascii=True, default=str), self.settings.groq_max_tokens_synthesis)
+        if ai_result:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "success",
+                "step": "device_recommendations",
+                "recommendations": ai_result,
+                "model": self._selected_model_name(provider),
+                "model_provider": provider,
+            }
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "device_recommendations",
+            "recommendations": {
+                "confidence": 40,
+                "required_approval": True,
+                "recommended_actions": [],
+                "reasoning": "No device recommendation generated without structured inputs.",
+            },
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
+    def _event_similarity(self, events: list[Any]) -> int:
+        score = 0
+        if not events:
+            return score
+        by_location = Counter()
+        by_type = Counter()
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("location"):
+                by_location[str(event["location"]).lower()] += 1
+            if event.get("type"):
+                by_type[str(event["type"]).lower()] += 1
+        score += min(50, max(by_location.values(), default=0) * 20)
+        score += min(30, max(by_type.values(), default=0) * 15)
+        score += min(20, len(events) * 2)
+        return min(100, score)
 
     def approve_jobs(self, request_id: str, approved_by: str | None = None, approval_role: str | None = None, note: str | None = None) -> dict[str, Any] | None:
         record = self.store.fetch_session(request_id)
@@ -731,7 +1219,7 @@ class MasterAIService:
                 "total_actions": len(actions),
             },
             "tokens_used": self._estimate_tokens({"message": message, "actions": actions}),
-            "model": self.settings.groq_model if self.groq.configured else "heuristic-fallback",
+            "model": self._selected_model_name(self._provider_order()[0][0]),
             "latency_ms": 0,
         }
 
@@ -778,7 +1266,7 @@ class MasterAIService:
                 "urgency": urgency,
             },
             "tokens_used": self._estimate_tokens({"message": message, "actions": actions}),
-            "model": self.settings.groq_model if self.groq.configured else "heuristic-fallback",
+            "model": self._selected_model_name(self._provider_order()[0][0]),
             "latency_ms": 0,
         }
 
@@ -822,7 +1310,7 @@ class MasterAIService:
                 "total_actions": len(actions),
             },
             "tokens_used": self._estimate_tokens({"message": message, "actions": actions}),
-            "model": self.settings.groq_model if self.groq.configured else "heuristic-fallback",
+            "model": self._selected_model_name(self._provider_order()[0][0]),
             "latency_ms": 0,
         }
 
@@ -1061,6 +1549,70 @@ class MasterAIService:
 
     def _synthesis_user_message(self, payload: dict[str, Any]) -> str:
         return json.dumps(payload, ensure_ascii=True, separators=(",", ":"), default=str)
+
+    def _incident_analysis_prompt(self) -> str:
+        return (
+            "You are the incident analysis engine for Lemtik Security. "
+            "Assess the supplied incident and context, then return JSON with threat_level, confidence, explanation, "
+            "recommended_actions, structured_incident, and gaps. "
+            "Never claim direct control of doors, elevators, gates, radios, or other infrastructure. "
+            "Only recommend actions for a human operator or downstream service to execute."
+        )
+
+    def _image_analysis_prompt(self) -> str:
+        return (
+            "You are the vision analysis engine for Lemtik Security. "
+            "Inspect the provided image and return JSON describing visible threats, people, vehicles, weapons, "
+            "access points, scene quality, confidence, and recommended human follow-up. "
+            "Do not invent details that are not visible in the image."
+        )
+
+    def _radio_prompt(self) -> str:
+        return (
+            "You are a radio transcript parser for Lemtik Security. "
+            "Convert the transcript into structured incident JSON with likely incident type, location clues, "
+            "urgency, confidence, and follow-up questions. "
+            "Return only JSON and do not assume missing facts."
+        )
+
+    def _report_prompt(self) -> str:
+        return (
+            "You are a report parser for Lemtik Security. "
+            "Transform the provided operator report into structured JSON with incident summary, extracted entities, "
+            "confidence, and unresolved gaps. "
+            "Return only JSON and stay faithful to the source text."
+        )
+
+    def _correlation_prompt(self) -> str:
+        return (
+            "You are an event correlation analyst for Lemtik Security. "
+            "Compare a set of incidents or events and return JSON with correlation strength, shared patterns, "
+            "likely links, and escalation guidance. "
+            "Do not invent relationships that the supplied data does not support."
+        )
+
+    def _summary_prompt(self) -> str:
+        return (
+            "You are a summary generator for Lemtik Security. "
+            "Condense the provided events into JSON with a headline, body, key patterns, and items reviewed. "
+            "Keep the summary operator-friendly and factual."
+        )
+
+    def _query_prompt(self) -> str:
+        return (
+            "You are a secure internal query assistant for Lemtik Security. "
+            "Answer the user's question using only the provided context if any, and return JSON with intent, "
+            "answer, assumptions, and follow_up_needed. "
+            "If context is insufficient, say so explicitly."
+        )
+
+    def _device_prompt(self) -> str:
+        return (
+            "You are a device and equipment recommender for Lemtik Security. "
+            "Given an incident and available devices, return JSON recommending the safest useful devices and actions. "
+            "Respect the human approval boundary and do not instruct direct autonomous control unless the caller has "
+            "explicitly provided approval context."
+        )
 
 
 def create_service(settings: Settings, store: MasterAIStore) -> MasterAIService:

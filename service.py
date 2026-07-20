@@ -839,9 +839,15 @@ class MasterAIService:
             "status": "success",
             "step": "query",
             "query": {
+                "query_intent": "structured_query",
+                "backend_filters": payload.get("filters") or {},
+                "time_range": payload.get("time_range") or None,
+                "sort": payload.get("sort") or None,
+                "limit": payload.get("limit") or None,
+                "aggregation": payload.get("aggregation") or None,
+                "assumptions": [],
+                "follow_up_needed": False,
                 "natural_language": question,
-                "intent": "structured_query",
-                "filters": payload.get("filters") or {},
             },
             "model": self._selected_model_name("heuristic-fallback"),
             "model_provider": "heuristic-fallback",
@@ -864,10 +870,15 @@ class MasterAIService:
             "status": "success",
             "step": "device_recommendations",
             "recommendations": {
-                "confidence": 40,
-                "required_approval": True,
-                "recommended_actions": [],
-                "reasoning": "No device recommendation generated without structured inputs.",
+                "threat_detected": bool(incident),
+                "confidence": 0.4,
+                "risk_level": "Medium" if incident else "Low",
+                "recommendations": [
+                    "Verify the incident details with an operator.",
+                    "Review the available devices and request human approval before execution.",
+                ] if incident else [
+                    "Collect additional context before recommending devices.",
+                ],
             },
             "model": self._selected_model_name("heuristic-fallback"),
             "model_provider": "heuristic-fallback",
@@ -1529,10 +1540,24 @@ class MasterAIService:
     def _triage_prompt(self) -> str:
         return (
             "You are the triage intelligence for Lemtik Security, a Nigerian urban security C4I platform. "
-            "Read a security incident report and decide what data needs to be gathered. "
-            "Return only valid JSON. Do not invent data. "
-            "Never request autonomous actions for severity 1-2. "
-            "Always request OSINT for severity 3+. "
+            "Convert unstructured incident text from WhatsApp, SMS, or operator logs into strict JSON. "
+            "Extract only what is explicitly present in the source. Never hallucinate or infer missing facts. "
+            "If a required field is missing, return null. Do not use markdown fences or commentary. "
+            "Use this schema exactly: {"
+            '"incident_type": string|null, '
+            '"severity": 1|2|3|4|5|null, '
+            '"urgency": string|null, '
+            '"armed_threat": boolean|null, '
+            '"suspect_on_premises": boolean|null, '
+            '"victim_count": integer|null, '
+            '"victim_status": string|null, '
+            '"location_confirmed": boolean|null, '
+            '"location_indoor": boolean|null, '
+            '"confidence": number|null, '
+            '"flags": array, '
+            '"follow_up_questions": array'
+            "}. "
+            "Never request autonomous actions for severity 1-2. Always request OSINT for severity 3+. "
             "If the incident is vague, set confidence low and flag for human verification."
         )
 
@@ -1553,65 +1578,109 @@ class MasterAIService:
     def _incident_analysis_prompt(self) -> str:
         return (
             "You are the incident analysis engine for Lemtik Security. "
-            "Assess the supplied incident and context, then return JSON with threat_level, confidence, explanation, "
-            "recommended_actions, structured_incident, and gaps. "
+            "Assess the supplied incident and any sensor or report context, then return JSON with threat_level, "
+            "confidence, explanation, recommended_actions, structured_incident, and gaps. "
+            "Validate multi-sensor evidence carefully. Never hallucinate missing facts. "
             "Never claim direct control of doors, elevators, gates, radios, or other infrastructure. "
             "Only recommend actions for a human operator or downstream service to execute."
         )
 
     def _image_analysis_prompt(self) -> str:
         return (
-            "You are the vision analysis engine for Lemtik Security. "
-            "Inspect the provided image and return JSON describing visible threats, people, vehicles, weapons, "
-            "access points, scene quality, confidence, and recommended human follow-up. "
-            "Do not invent details that are not visible in the image."
+            "You are the vision analysis engine for Lemtik Security using Qwen Vision. "
+            "Inspect CCTV snapshots and cross-sensor details, then return strict JSON only. "
+            "Answer whether someone is visible, whether the camera is blocked or compromised, whether the feed "
+            "looks frozen or stale, whether the intruder is forcing entry, and whether the event is a false alarm. "
+            "Assess signs of forced access, tampering, obstruction, or stale video. "
+            "Do not invent details that are not visible in the image. Return null for unknown fields. "
+            "Output this schema exactly: {"
+            '"threat_detected": boolean, '
+            '"confidence": number, '
+            '"summary": string, '
+            '"risk_level": "Low"|"Medium"|"High", '
+            '"recommendation": array'
+            "}. "
+            "Do not use markdown fences or commentary."
         )
 
     def _radio_prompt(self) -> str:
         return (
             "You are a radio transcript parser for Lemtik Security. "
-            "Convert the transcript into structured incident JSON with likely incident type, location clues, "
-            "urgency, confidence, and follow-up questions. "
-            "Return only JSON and do not assume missing facts."
+            "Convert raw speech-to-text into clean structured JSON. Support Nigerian English, Nigerian Pidgin, "
+            "and security call signs such as Alpha One and Base. "
+            "Clean grammar, remove filler words, interpret call signs, and normalize the transcript into plain "
+            "operational English without changing meaning. "
+            "Extract incident_type, location, severity, suspects, requires_backup, and summary. "
+            "If a field is missing or unclear, return null. Return only valid JSON with no markdown fences. "
+            "Use this schema exactly: {"
+            '"incident_type": string|null, '
+            '"location": string|null, '
+            '"severity": 1|2|3|4|5|null, '
+            '"suspects": integer|null, '
+            '"requires_backup": boolean|null, '
+            '"summary": string|null'
+            "}."
         )
 
     def _report_prompt(self) -> str:
         return (
             "You are a report parser for Lemtik Security. "
-            "Transform the provided operator report into structured JSON with incident summary, extracted entities, "
-            "confidence, and unresolved gaps. "
-            "Return only JSON and stay faithful to the source text."
+            "Transform the provided operator report into valid JSON matching the database schema. "
+            "Handle WhatsApp, SMS, operator notes, and incident logs. "
+            "Do not hallucinate or invent dates, names, items, or measurements. If a required field is missing, "
+            "return null. Return only valid JSON with no markdown fences and stay faithful to the source text."
         )
 
     def _correlation_prompt(self) -> str:
         return (
-            "You are an event correlation analyst for Lemtik Security. "
-            "Compare a set of incidents or events and return JSON with correlation strength, shared patterns, "
-            "likely links, and escalation guidance. "
-            "Do not invent relationships that the supplied data does not support."
+            "You are an intelligence correlation analyst for Lemtik Security. "
+            "Compare new incidents with past incidents and return strict JSON only. "
+            "Extract similar_incidents, repeat_locations, suspect_patterns, and confidence scores. "
+            "Do not invent relationships that the supplied data does not support. Use null for unknown values. "
+            "Do not use markdown fences or commentary."
         )
 
     def _summary_prompt(self) -> str:
         return (
-            "You are a summary generator for Lemtik Security. "
-            "Condense the provided events into JSON with a headline, body, key patterns, and items reviewed. "
-            "Keep the summary operator-friendly and factual."
+            "You are a board-report summary generator for Lemtik Security. "
+            "Review historical incidents, patrol compliance indexes, and resource availability counts. "
+            "Produce a board-ready security report in strict JSON only, with no markdown fences or commentary. "
+            "Write clear headlines, key patterns, and concise summary paragraphs. "
+            "Never invent facts. Use null for unknown values. "
+            "Return a structure that includes headline, key_patterns, summary_paragraphs, compliance_snapshot, "
+            "resource_snapshot, and items_reviewed."
         )
 
     def _query_prompt(self) -> str:
         return (
-            "You are a secure internal query assistant for Lemtik Security. "
-            "Answer the user's question using only the provided context if any, and return JSON with intent, "
-            "answer, assumptions, and follow_up_needed. "
-            "If context is insufficient, say so explicitly."
+            "You are a secure internal command center parser for Lemtik Security. "
+            "Parse natural language commands like 'Which estate has the highest access violations?' or "
+            "'Where are my patrols?' into structured backend filters. "
+            "Return strict JSON only, no markdown fences, no commentary. "
+            "The output must contain action and filters. Filters should use fields such as estate_name, location, "
+            "severity_min, active_patrols_only, and date_range when relevant. "
+            "Never output raw SQL, SQL fragments, query parameters, or injection-prone text. "
+            "If context is insufficient, use null for missing fields and keep filters explicit. "
+            "Use this schema exactly: {"
+            '"action": "filter_incidents"|"locate_patrols"|"generate_report", '
+            '"filters": {'
+            '"estate_name": string|null, '
+            '"location": string|null, '
+            '"severity_min": integer|null, '
+            '"active_patrols_only": boolean|null, '
+            '"date_range": object|null'
+            "}"
+            "}."
         )
 
     def _device_prompt(self) -> str:
         return (
             "You are a device and equipment recommender for Lemtik Security. "
-            "Given an incident and available devices, return JSON recommending the safest useful devices and actions. "
-            "Respect the human approval boundary and do not instruct direct autonomous control unless the caller has "
-            "explicitly provided approval context."
+            "Given an incident and available devices, return ONLY a JSON object with exactly these keys: "
+            "threat_detected, confidence, risk_level, recommendations. "
+            "threat_detected must be a boolean, confidence must be a float, risk_level must be Low, Medium, or High, "
+            "and recommendations must be an array of strings. "
+            "Recommend human-verifiable actions only. Do not instruct direct autonomous control."
         )
 
 

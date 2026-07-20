@@ -297,6 +297,39 @@ class MasterAITestCase(unittest.TestCase):
         self.assertEqual(body["step"], "analysis")
         self.assertIn("model_provider", body)
 
+    def test_query_fallback_returns_structured_filters(self) -> None:
+        result = self.app_module.service.query(
+            {
+                "request_id": "req_ai_query_001",
+                "question": "Show all high-risk incidents today",
+                "filters": {"risk_level": "High"},
+                "time_range": {"preset": "today"},
+                "sort": {"field": "created_at", "direction": "desc"},
+                "limit": 25,
+            }
+        )
+        self.assertEqual(result["step"], "query")
+        self.assertIn("backend_filters", result["query"])
+        self.assertEqual(result["query"]["backend_filters"]["risk_level"], "High")
+        self.assertEqual(result["query"]["time_range"]["preset"], "today")
+
+    def test_device_recommendations_fallback_schema(self) -> None:
+        result = self.app_module.service.device_recommendations(
+            {
+                "request_id": "req_ai_device_001",
+                "incident": {
+                    "description": "Suspicious person trying to enter the warehouse fence.",
+                },
+                "available_devices": [{"type": "cctv"}],
+            }
+        )
+        rec = result["recommendations"]
+        self.assertIn("threat_detected", rec)
+        self.assertIn("confidence", rec)
+        self.assertIn("risk_level", rec)
+        self.assertIn("recommendations", rec)
+        self.assertIsInstance(rec["recommendations"], list)
+
 
 if __name__ == "__main__":
     unittest.main()

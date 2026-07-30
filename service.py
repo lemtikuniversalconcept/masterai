@@ -20,6 +20,8 @@ try:
 except Exception:  # pragma: no cover - optional dependency in local dev
     Groq = None  # type: ignore
 
+MAX_COMPLETION_TOKENS = 1024
+
 INCIDENT_CLASSIFIERS: list[tuple[str, str, int, list[str]]] = [
     ("kidnap", "kidnapping_attempt", 5, ["kidnapping", "abduction", "taken"]),
     ("armed robbery", "robbery_armed", 4, ["robbery", "armed", "gun"]),
@@ -98,6 +100,10 @@ def _parse_number(description: str, default: int = 1) -> int:
     return default
 
 
+def _cap_completion_tokens(max_tokens: int) -> int:
+    return max(64, min(int(max_tokens), MAX_COMPLETION_TOKENS))
+
+
 class GroqGateway:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -112,6 +118,7 @@ class GroqGateway:
     def chat_json(self, system_prompt: str, user_message: str, max_tokens: int) -> dict[str, Any] | None:
         if not self.api_key:
             return None
+        max_tokens = _cap_completion_tokens(max_tokens)
         payload = {
             "model": self.settings.groq_model,
             "messages": [
@@ -120,6 +127,7 @@ class GroqGateway:
             ],
             "temperature": self.settings.groq_temperature,
             "max_tokens": max_tokens,
+            "stream": False,
             "response_format": {"type": "json_object"},
         }
         try:
@@ -199,6 +207,7 @@ class QwenGateway:
     def chat_json(self, system_prompt: str, user_message: str, max_tokens: int, model: str | None = None) -> dict[str, Any] | None:
         if not self.api_key:
             return None
+        max_tokens = _cap_completion_tokens(max_tokens)
         payload = {
             "model": model or self.text_model,
             "messages": [
@@ -207,6 +216,7 @@ class QwenGateway:
             ],
             "temperature": self.settings.qwen_temperature,
             "max_tokens": max_tokens,
+            "stream": False,
             "response_format": {"type": "json_object"},
         }
         try:
@@ -243,6 +253,7 @@ class QwenGateway:
     ) -> dict[str, Any] | None:
         if not self.api_key:
             return None
+        max_tokens = _cap_completion_tokens(max_tokens)
         content = [{"type": "text", "text": user_text}]
         for url in image_urls:
             content.append({"type": "image_url", "image_url": {"url": url}})
@@ -254,6 +265,7 @@ class QwenGateway:
             ],
             "temperature": self.settings.qwen_temperature,
             "max_tokens": max_tokens,
+            "stream": False,
             "response_format": {"type": "json_object"},
         }
         try:

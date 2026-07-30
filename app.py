@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,7 @@ def _json_response(status: int, payload: dict[str, Any]) -> tuple[int, list[tupl
 
 settings = load_settings(Path(__file__).resolve().parent)
 store = create_store(settings.database_url, settings.local_database_path)
+atexit.register(store.close)
 service = create_service(settings, store)
 
 

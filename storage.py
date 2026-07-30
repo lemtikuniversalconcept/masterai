@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import queue
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +17,48 @@ except Exception:  # pragma: no cover - optional dependency in local dev
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), default=str)
+
+
+class _ConnectionPool:
+    def __init__(self, factory, closer, max_size: int) -> None:
+        self._factory = factory
+        self._closer = closer
+        self._max_size = max_size
+        self._available: queue.LifoQueue[Any] = queue.LifoQueue(maxsize=max_size)
+        self._created = 0
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        if self._closed:
+            raise RuntimeError("database pool is closed")
+        try:
+            return self._available.get_nowait()
+        except queue.Empty:
+            with self._lock:
+                if self._created < self._max_size:
+                    conn = self._factory()
+                    self._created += 1
+                    return conn
+            return self._available.get()
+
+    def release(self, conn) -> None:
+        if self._closed:
+            self._closer(conn)
+            return
+        try:
+            self._available.put_nowait(conn)
+        except queue.Full:
+            self._closer(conn)
+
+    def close(self) -> None:
+        self._closed = True
+        while True:
+            try:
+                conn = self._available.get_nowait()
+            except queue.Empty:
+                break
+            self._closer(conn)
 
 
 @dataclass
@@ -43,26 +87,50 @@ class MasterAIStore:
         self.use_postgres = bool(database_url and database_url.startswith(("postgres://", "postgresql://")) and psycopg is not None)
         if not self.use_postgres:
             self.local_database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._pool = self._build_pool()
         self._init_schema()
+
+    def _build_pool(self) -> _ConnectionPool:
+        if self.use_postgres:
+            def factory():
+                assert psycopg is not None
+                conn = psycopg.connect(self.database_url)  # type: ignore[arg-type]
+                conn.autocommit = False
+                return conn
+
+            def closer(conn) -> None:
+                conn.close()
+
+            return _ConnectionPool(factory, closer, max_size=4)
+
+        def factory():
+            conn = sqlite3.connect(self.local_database_path, timeout=30, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+            return conn
+
+        def closer(conn) -> None:
+            conn.close()
+
+        return _ConnectionPool(factory, closer, max_size=1)
 
     @contextmanager
     def _connect(self):
-        if self.use_postgres:
-            assert psycopg is not None
-            conn = psycopg.connect(self.database_url)  # type: ignore[arg-type]
+        conn = self._pool.acquire()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
             try:
-                yield conn
-                conn.commit()
-            finally:
-                conn.close()
-        else:
-            conn = sqlite3.connect(self.local_database_path)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-                conn.commit()
-            finally:
-                conn.close()
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            self._pool.release(conn)
 
     def _init_schema(self) -> None:
         session_sql = """
@@ -249,6 +317,9 @@ class MasterAIStore:
             "database": "postgres" if self.use_postgres else "sqlite",
             "path": str(self.local_database_path),
         }
+
+    def close(self) -> None:
+        self._pool.close()
 
     @staticmethod
     def _row_to_dict(columns: list[str] | Any, row: Any) -> dict[str, Any]:

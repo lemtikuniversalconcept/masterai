@@ -77,7 +77,7 @@ class MasterAIASGIApp:
             if method == "GET" and normalized_path.startswith("/health/"):
                 return _json_response(200, self.service.health())
             if method == "GET" and normalized_path == "/":
-                return _json_response(200, {"status": "ok", "service": "masterai", "endpoints": ["/health", "/triage", "/synthesise", "/process", "/session/{id}", "/ai/analyze-incident", "/ai/analyze-image", "/ai/process-radio", "/ai/parse-report", "/ai/recommend-response", "/ai/correlate-events", "/ai/generate-summary", "/ai/query", "/ai/device-recommendations"]})
+                return _json_response(200, {"status": "ok", "service": "masterai", "endpoints": ["/health", "/triage", "/synthesise", "/process", "/session/{id}", "/ai/analyze-incident", "/ai/analyze-image", "/ai/process-radio", "/ai/parse-report", "/ai/recommend-response", "/ai/correlate-events", "/ai/generate-summary", "/ai/query", "/ai/converse", "/ai/device-recommendations"]})
 
             if method == "POST" and normalized_path in {"/triage", "/synthesise", "/process"}:
                 _check_internal_key(headers.get("x-internal-key"))
@@ -135,6 +135,7 @@ class MasterAIASGIApp:
                 "/ai/correlate-events",
                 "/ai/generate-summary",
                 "/ai/query",
+                "/ai/converse",
                 "/ai/device-recommendations",
             }:
                 _check_internal_key(headers.get("x-internal-key"))
@@ -148,6 +149,7 @@ class MasterAIASGIApp:
                     "/ai/correlate-events": self.service.correlate_events,
                     "/ai/generate-summary": self.service.generate_summary,
                     "/ai/query": self.service.query,
+                    "/ai/converse": self.service.converse,
                     "/ai/device-recommendations": self.service.device_recommendations,
                 }
                 return _json_response(200, handlers[normalized_path](payload))
@@ -224,7 +226,7 @@ if FastAPI is not None:
 
     @app.get("/")
     async def root() -> JSONResponse:  # type: ignore[valid-type]
-        return JSONResponse({"status": "ok", "service": "masterai", "endpoints": ["/health", "/triage", "/synthesise", "/process", "/session/{id}", "/ai/analyze-incident", "/ai/analyze-image", "/ai/process-radio", "/ai/parse-report", "/ai/recommend-response", "/ai/correlate-events", "/ai/generate-summary", "/ai/query", "/ai/device-recommendations"]})
+        return JSONResponse({"status": "ok", "service": "masterai", "endpoints": ["/health", "/triage", "/synthesise", "/process", "/session/{id}", "/ai/analyze-incident", "/ai/analyze-image", "/ai/process-radio", "/ai/parse-report", "/ai/recommend-response", "/ai/correlate-events", "/ai/generate-summary", "/ai/query", "/ai/converse", "/ai/device-recommendations"]})
 
     @app.post("/triage")
     @app.post("/api/v1/triage")
@@ -300,6 +302,7 @@ if FastAPI is not None:
                     "/ai/correlate-events",
                     "/ai/generate-summary",
                     "/ai/query",
+                    "/ai/converse",
                     "/ai/device-recommendations",
                 ],
             }
@@ -352,6 +355,12 @@ if FastAPI is not None:
     async def ai_query(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
         payload = await request.json()
         return JSONResponse(service.query(payload))
+
+    @app.post("/ai/converse")
+    @app.post("/api/v1/ai/converse")
+    async def ai_converse(request: Request, _: None = Depends(require_internal_key)) -> JSONResponse:  # type: ignore[valid-type]
+        payload = await request.json()
+        return JSONResponse(service.converse(payload))
 
     @app.post("/ai/device-recommendations")
     @app.post("/api/v1/ai/device-recommendations")

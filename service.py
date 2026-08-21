@@ -865,6 +865,62 @@ class MasterAIService:
             "model_provider": "heuristic-fallback",
         }
 
+    def converse(self, payload: dict[str, Any]) -> dict[str, Any]:
+        mode = payload.get("mode") or "forensic"
+        response_mode = payload.get("response_mode") or "plain"
+        language = payload.get("language") or "en"
+        query_text = (payload.get("query") or payload.get("message") or "").strip()
+        context = payload.get("context") or {}
+        history = payload.get("conversation_history") or []
+
+        if not query_text:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "error",
+                "step": "converse",
+                "error": {"reason": "query is required"},
+            }
+
+        history_text = ""
+        if history:
+            lines = [f"{turn.get('role', 'user')}: {turn.get('content', '')}" for turn in history[-10:]]
+            history_text = "\n".join(lines) + "\n"
+
+        user_message = (
+            f"Context:\n{json.dumps(context, ensure_ascii=True, default=str)}\n\n"
+            f"{history_text}"
+            f"user: {query_text}"
+        )
+
+        ai_result, provider = self._chat_json(
+            self._converse_prompt(mode, response_mode, language),
+            user_message,
+            self.settings.groq_max_tokens_synthesis,
+        )
+        if ai_result:
+            return {
+                "request_id": payload.get("request_id"),
+                "status": "success",
+                "step": "converse",
+                "response": ai_result.get("response", ""),
+                "sources": ai_result.get("sources") or [],
+                "confidence": ai_result.get("confidence"),
+                "mode": response_mode,
+                "model": self._selected_model_name(provider),
+                "model_provider": provider,
+            }
+        return {
+            "request_id": payload.get("request_id"),
+            "status": "success",
+            "step": "converse",
+            "response": "I don't have enough information to answer that right now. Please try again in a moment.",
+            "sources": [],
+            "confidence": 0,
+            "mode": response_mode,
+            "model": self._selected_model_name("heuristic-fallback"),
+            "model_provider": "heuristic-fallback",
+        }
+
     def device_recommendations(self, payload: dict[str, Any]) -> dict[str, Any]:
         incident = payload.get("incident") or payload.get("context") or {}
         ai_result, provider = self._chat_json(self._device_prompt(), json.dumps({"incident": incident, "available_devices": payload.get("available_devices") or []}, ensure_ascii=True, default=str), self.settings.groq_max_tokens_synthesis)
@@ -1684,6 +1740,38 @@ class MasterAIService:
             "}"
             "}."
         )
+
+    def _converse_prompt(self, mode: str, response_mode: str, language: str | None) -> str:
+        if mode == "consumer":
+            base = (
+                "You are Lemtik Security's emergency assistant speaking directly to a person who may be in "
+                "danger, panicked, or under stress inside a secured premises. Keep sentences short and calm. "
+                "Ask exactly one thing at a time. Never use technical jargon, internal IDs, or security "
+                "terminology. If the person describes immediate physical danger, tell them help is already on "
+                "the way and to stay where it is safe and not confront the situation."
+            )
+        else:
+            base = (
+                "You are Lemtik Security's forensic case assistant for a security analyst reviewing a closed or "
+                "ongoing incident. Answer only from the case context provided. Never fabricate events, times, "
+                "or evidence that is not in the supplied data — if something is not in the data, say so "
+                "explicitly instead of guessing."
+            )
+            base += (
+                ' Respond in plain narrative language with no technical IDs, model names, or confidence scores.'
+                if response_mode != "technical"
+                else ' Include specific source references (camera IDs, timestamps to the second, confidence '
+                     'scores) inline in your answer so the analyst can verify each claim.'
+            )
+        if language and language != "en":
+            base += f" Respond in {language}."
+        base += (
+            ' Return strict JSON only, no markdown fences, no commentary. Use this schema exactly: '
+            '{"response": string, "sources": [{"type": string, "id": string, "timestamp": string|null}], '
+            '"confidence": number}. The "response" field is the only thing the user reads — write it as '
+            'natural, complete sentences, never as a data dump.'
+        )
+        return base
 
     def _device_prompt(self) -> str:
         return (

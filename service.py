@@ -20,6 +20,11 @@ try:
 except Exception:  # pragma: no cover - optional dependency in local dev
     Groq = None  # type: ignore
 
+try:
+    import httpx
+except Exception:  # pragma: no cover - optional dependency in local dev
+    httpx = None  # type: ignore
+
 MAX_COMPLETION_TOKENS = 1024
 
 INCIDENT_CLASSIFIERS: list[tuple[str, str, int, list[str]]] = [
@@ -109,7 +114,20 @@ class GroqGateway:
         self.settings = settings
         self.api_key = settings.groq_api_key
         self.base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
-        self.client = Groq(api_key=self.api_key) if Groq is not None and self.api_key else None
+        # httpx defaults to HTTP/1.1 unless http2=True is set explicitly (even with the
+        # h2 package installed) — Cloudflare, which fronts Groq's API, was fingerprinting
+        # those HTTP/1.1-only requests as bot traffic and rejecting them with a 403
+        # (Cloudflare error 1010), while curl — which negotiates HTTP/2 by default —
+        # sailed through with the identical key and payload. This was never a bad key.
+        http_client = None
+        if httpx is not None:
+            try:
+                http_client = httpx.Client(http2=True)
+            except Exception:
+                http_client = None
+        self.client = (
+            Groq(api_key=self.api_key, http_client=http_client) if Groq is not None and self.api_key else None
+        )
 
     @property
     def configured(self) -> bool:
@@ -173,13 +191,24 @@ class GroqGateway:
         if not self.api_key:
             return {"configured": False, "reachable": False, "model": self.settings.groq_model}
         try:
-            req = urllib_request.Request(
-                "https://api.groq.com/openai/v1/models",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                method="GET",
-            )
-            with urllib_request.urlopen(req, timeout=min(8, self.settings.agent_timeout_seconds)) as response:
-                status_code = getattr(response, "status", 200)
+            # Plain urllib defaults to HTTP/1.1, which Cloudflare (fronting Groq's API)
+            # was fingerprinting as bot traffic and rejecting outright — using the same
+            # HTTP/2 client as chat_json keeps this probe honest about what actually works.
+            if httpx is not None:
+                with httpx.Client(http2=True, timeout=min(8, self.settings.agent_timeout_seconds)) as client:
+                    response = client.get(
+                        "https://api.groq.com/openai/v1/models",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                    )
+                status_code = response.status_code
+            else:
+                req = urllib_request.Request(
+                    "https://api.groq.com/openai/v1/models",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    method="GET",
+                )
+                with urllib_request.urlopen(req, timeout=min(8, self.settings.agent_timeout_seconds)) as response:
+                    status_code = getattr(response, "status", 200)
             return {
                 "configured": True,
                 "reachable": status_code < 500,

@@ -1147,6 +1147,22 @@ class MasterAIService:
                     },
                 }
             )
+        if raw.get("lat") is not None and raw.get("lng") is not None:
+            # "Let's see what's actually happening" - point the nearest PTZ/snapshot-capable
+            # camera at the incident and run real detection on what it captures. Any incident
+            # with a resolvable location qualifies, not just ones needing officer dispatch -
+            # visual confirmation is useful before deciding anything else. Threat reports and
+            # suspicious-vehicle triage already returned early above (osint-only, no active
+            # scene to look at), so this only reaches genuinely active incidents.
+            jobs.append(
+                {
+                    "service": "camera_observation",
+                    "priority": 1,
+                    "parameters": {
+                        "incident_location": {"lat": raw.get("lat"), "lng": raw.get("lng")},
+                    },
+                }
+            )
         if officers_needed:
             jobs.append(
                 {

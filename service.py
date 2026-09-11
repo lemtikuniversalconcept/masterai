@@ -954,6 +954,7 @@ class MasterAIService:
         transcript = (payload.get("transcript") or "").strip()
         history = payload.get("conversation_history") or []
         current_description = payload.get("current_description") or ""
+        language = payload.get("language") or "en"
 
         if not transcript:
             return {
@@ -975,7 +976,7 @@ class MasterAIService:
         )
 
         ai_result, provider = self._chat_json(
-            self._emergency_intake_prompt(), user_message, self.settings.groq_max_tokens_synthesis
+            self._emergency_intake_prompt(language), user_message, self.settings.groq_max_tokens_synthesis
         )
         if ai_result:
             return {
@@ -1877,8 +1878,8 @@ class MasterAIService:
         )
         return base
 
-    def _emergency_intake_prompt(self) -> str:
-        return (
+    def _emergency_intake_prompt(self, language: str | None = None) -> str:
+        base = (
             "You are Lemtik Security's emergency intake AI, functioning like a 911 dispatcher. A guest just "
             "triggered an emergency alert and is describing what's happening, possibly across several short "
             "turns. Do four things:\n"
@@ -1897,11 +1898,22 @@ class MasterAIService:
             "4. If confident, classify the incident as exactly one of: intrusion, theft, robbery, armed_attack, "
             "kidnapping, medical, fire, suspicious, civil_unrest, vandalism, fraud_scam, cyber_incident, other. "
             "Otherwise return null.\n"
+        )
+        if language and language != "en":
+            base += (
+                f"The guest is communicating in {language} (their transcript below may be imperfectly "
+                f"transcribed speech-to-text in that language). Write spoken_response and follow_up_question in "
+                f"{language} so the guest understands you. rewritten_description must always be written in "
+                "English regardless of the guest's language, since that is what the security operator reads to "
+                "dispatch a response.\n"
+            )
+        base += (
             "Return strict JSON only, no markdown fences, no commentary. Use this schema exactly: "
             '{"spoken_response": string, "rewritten_description": string, "follow_up_question": string|null, '
             '"danger_detected": boolean, "incident_type_guess": string|null}. spoken_response is what gets '
             "spoken back to a possibly panicked guest — short, calm, natural sentences, never technical jargon."
         )
+        return base
 
     def _device_prompt(self) -> str:
         return (

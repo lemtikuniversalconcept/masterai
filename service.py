@@ -603,6 +603,7 @@ class MasterAIService:
             return None
         return {
             "request_id": request_id,
+            "org_id": record.get("org_id"),
             "status": record.get("status"),
             "jobs_manifest": record.get("jobs_manifest") or {},
             "triage_output": record.get("triage_output") or {},

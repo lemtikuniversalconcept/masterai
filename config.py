@@ -18,6 +18,7 @@ class Settings:
     ai_provider: str
     groq_api_key: str | None
     groq_model: str
+    groq_vision_model: str
     groq_temperature: float
     groq_max_tokens_triage: int
     groq_max_tokens_synthesis: int
@@ -51,6 +52,10 @@ def load_settings(base_dir: Path | None = None) -> Settings:
         ai_provider=os.getenv("AI_PROVIDER", "auto").strip().lower(),
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip() or None,
         groq_model=os.getenv("AGENT_MODEL", "llama-3.3-70b-versatile").strip(),
+        # Groq's own hosted vision-capable model - added so image analysis has a free,
+        # already-configured fallback that doesn't depend on the separate Qwen/DashScope
+        # key (Qwen has no free tier of its own; Groq's developer tier does).
+        groq_vision_model=os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip(),
         groq_temperature=float(os.getenv("AGENT_TEMPERATURE", "0.1")),
         groq_max_tokens_triage=int(os.getenv("AGENT_MAX_TOKENS_TRIAGE", "1000")),
         groq_max_tokens_synthesis=int(os.getenv("AGENT_MAX_TOKENS_SYNTHESIS", "2500")),

@@ -187,6 +187,55 @@ class GroqGateway:
         except Exception:
             return None
 
+    def multimodal_json(
+        self,
+        system_prompt: str,
+        user_text: str,
+        image_urls: list[str],
+        max_tokens: int,
+        model: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.api_key:
+            return None
+        max_tokens = _cap_completion_tokens(max_tokens)
+        content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+        for url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        payload = {
+            "model": model or self.settings.groq_vision_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ],
+            "temperature": self.settings.groq_temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            req = urllib_request.Request(
+                f"{self.base_url}/chat/completions",
+                data=json.dumps(payload, ensure_ascii=True, default=str).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=self.settings.agent_timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            choices = data.get("choices") or []
+            if not choices:
+                return None
+            message = choices[0].get("message") if isinstance(choices[0], dict) else None
+            content_text = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content_text, str) or not content_text.strip():
+                return None
+            parsed = json.loads(content_text)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
     def health_probe(self) -> dict[str, Any]:
         if not self.api_key:
             return {"configured": False, "reachable": False, "model": self.settings.groq_model}
@@ -366,8 +415,10 @@ class MasterAIService:
             order = [("qwen", self.qwen), ("groq", self.groq)]
         else:
             order = [("qwen", self.qwen), ("groq", self.groq)] if self.qwen.configured else [("groq", self.groq), ("qwen", self.qwen)]
-        if multimodal:
-            order = [item for item in order if item[0] == "qwen"] or order
+        # Both gateways now support vision (Groq hosts its own vision-capable model), so
+        # multimodal calls use the same provider order as everything else - previously this
+        # hard-excluded Groq and went Qwen-only, which meant a Qwen outage (no free tier,
+        # unlike Groq) took down image analysis entirely with no fallback at all.
         return order
 
     def _chat_json(
@@ -379,14 +430,9 @@ class MasterAIService:
         image_urls: list[str] | None = None,
     ) -> tuple[dict[str, Any] | None, str]:
         for provider_name, gateway in self._provider_order(multimodal=multimodal):
-            if provider_name == "qwen":
-                if multimodal and image_urls:
-                    result = gateway.multimodal_json(system_prompt, user_message, image_urls, max_tokens)
-                else:
-                    result = gateway.chat_json(system_prompt, user_message, max_tokens)
+            if multimodal and image_urls:
+                result = gateway.multimodal_json(system_prompt, user_message, image_urls, max_tokens)
             else:
-                if multimodal:
-                    continue
                 result = gateway.chat_json(system_prompt, user_message, max_tokens)
             if result:
                 return result, provider_name
@@ -396,7 +442,7 @@ class MasterAIService:
         if provider == "qwen":
             return self.qwen.vision_model if multimodal else self.qwen.text_model
         if provider == "groq":
-            return self.settings.groq_model
+            return self.settings.groq_vision_model if multimodal else self.settings.groq_model
         return "heuristic-fallback"
 
     def health(self) -> dict[str, Any]:

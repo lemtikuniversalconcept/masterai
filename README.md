@@ -44,3 +44,13 @@ The local shim in [`relationship_client.py`](./relationship_client.py) can be us
 
 - [`Procfile`](./Procfile)
 - [`main.py`](./main.py)
+
+## License
+
+Proprietary — All Rights Reserved. See [LICENSE](./LICENSE). This code is
+shared publicly for evaluation purposes only; it is not licensed for reuse,
+modification, or redistribution.
+
+---
+
+© 2026 Lemtik Security. All rights reserved.
